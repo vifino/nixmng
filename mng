@@ -1,0 +1,142 @@
+#!/bin/sh
+# mng version 0.1
+# Manage/Query servers, unixly.
+# ISC (C) vifino 2019 
+set -e
+
+# Variables
+GROUPDIR="$HOME/.config/mng"
+
+###
+##   DON'T TOUCH AFTER HERE
+## (or do, I'm not your mom.)
+###
+
+usage() {
+	[ ! -z "$1" ] && echo "Error: $1"
+	echo "Usage: $(basename "$0") command group [...]"
+	echo "Available commands:"
+	echo "  list: list hosts"
+	echo "  ping: ping hosts"
+	echo "  ipmi: run ipmi commands"
+	echo "   ssh: execute commands via ssh"
+	echo
+	echo "Available groups:"
+	ls ~/.config/mng
+	exit 1
+}
+
+# Ensure we got all the requirements for usage.
+if [ ! -d ~/.config/mng ]; then
+	echo "Error: The directory ~/.config/mng does not exist."
+	echo "You might wanna create that directory with files named after"
+	echo "your group of hosts. Then insert newline seperated entries with"
+	echo "the first column being the name, followed by IP/hostname, (optionally)"
+	echo "a user and arguments, a single space inbetween the columns."
+	echo
+	echo "Example:"
+	echo "host1 1.2.3.4 vifino argument1 argument2"
+	echo "host2 4.3.2.1 onifiv"
+	echo "host3 pubserv.com"
+	exit 1
+fi
+
+# Arguments.
+COMMAND="$1"
+[ -z "$1" ] && usage "Lacking command."
+shift
+
+GROUP="$1"
+[ -z "$1" ] && usage "Lacking group."
+shift
+
+# Internal functions.
+has_bin() {
+	command -v "$1" >/dev/null
+}
+require_bin() {
+	has_bin "$1" || usage "Need '$1', it isn't in the path."
+}
+
+cmd() {
+	echo "\$ $*"
+	"$@"
+	STATUS=$?
+	if [ $STATUS -ne 0 ]; then
+		log fail "Command failed: $*" $STATUS
+	fi
+}
+
+over_group() {
+	# $1 is the group name, rest is command.
+	GROUP="$1"
+	shift
+	if [ ! -f "$GROUPDIR/$GROUP" ]; then
+		echo "Error: Invalid group: '$GROUP'."
+		exit 1
+	fi
+
+	FN="$1"
+	shift
+	if [ -z "$FN" ]; then
+		echo "Error: Lacking a valid function name."
+		exit 1
+	fi
+
+	while read -r NAME HOST USER ARGS; do
+		[ ! -z "$NAME" ] && "$FN" "$@" < /dev/null
+	done < $GROUPDIR/$GROUP
+}
+
+# Actual commands.
+g_list() {
+	if [ -z "$USER" ]; then
+		echo "$NAME: $HOST"
+	else
+		echo "$NAME: $USER@$HOST"
+	fi
+}
+
+g_ping() {
+	echo "# $NAME:"
+	[ -z "$ARGS" ] && ARGS="-c 3"
+	cmd ping $ARGS "$HOST"
+}
+
+g_ssh() {
+	[ -z "$1" ] && usage "Command ssh needs arguments."
+
+	echo "# $NAME:"
+
+	MARGS="$ARGS"
+	if [ ! -z "$USER" ]; then
+		MARGS="-l $USER"
+	fi
+
+	cmd ssh -Tn $MARGS "$HOST" "$@"
+}
+
+g_ipmi() {
+	[ -z "$1" ] && usage "Command ipmi needs arguments."
+
+	echo "# $NAME:"
+
+	MARGS="$ARGS"
+	if [ ! -z "$USER" ]; then
+		MARGS="-U $USER $ARGS"
+	fi
+
+	cmd ipmitool -H "$HOST" $MARGS "$@"
+}
+
+case "$COMMAND" in
+	list|ping)
+		over_group "$GROUP" "g_$COMMAND" "$@" ;;
+	ssh)
+		require_bin ssh
+		over_group "$GROUP" g_ssh "$@" ;;
+	ipmi)
+		require_bin ipmitool
+		over_group "$GROUP" g_ipmi "$@" ;;
+	*) usage "No such command: $COMMAND" ;;
+esac
